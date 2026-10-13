@@ -1,0 +1,29 @@
+{
+  "status": "SUCCESS",
+  "command": {
+    "name": "usage",
+    "data": {
+      "groups": [
+        {
+          "display_name": "Gemini",
+          "buckets": [
+            {
+              "bucket_id": "first",
+              "display_name": "Pro",
+              "remaining_fraction": 0.25,
+              "reset_time": "1790812800"
+            },
+            {
+              "id": "disabled",
+              "disabled": true,
+              "remainingFraction": 1
+            },
+            {
+              "id": "missing"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "membershipType": "pro",
+  "billingCycleStart": "2026-09-01T00:00:00Z",
+  "billingCycleEnd": "2026-10-01T00:00:00Z",
+  "individualUsage": {
+    "plan": {
+      "used": 1250,
+      "limit": 2000,
+      "autoPercentUsed": 0.36,
+      "apiPercentUsed": 12
+    },
+    "onDemand": {
+      "used": 125
+    }
+  },
+  "breakdown": {
+    "total": 9999
+  }
+}

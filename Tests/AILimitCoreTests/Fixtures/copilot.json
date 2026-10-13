@@ -1,0 +1,17 @@
+{
+  "copilot_plan": "pro",
+  "quota_snapshots": {
+    "premium_interactions": {
+      "percent_remaining": 75,
+      "entitlement": 100,
+      "remaining": 75,
+      "credits_used": 31
+    },
+    "chat": {
+      "entitlement": 0,
+      "remaining": 0,
+      "percent_remaining": 100,
+      "credits_used": 31
+    }
+  }
+}

@@ -1,0 +1,68 @@
+# Swift / Xcode generated files
+.build/
+.swiftpm/
+DerivedData/
+build/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+*.xcarchive/
+*.xcresult/
+*.app/
+*.dSYM/
+*.o
+*.a
+*.dylib
+
+# macOS / editor-local files
+.DS_Store
+._*
+.AppleDouble/
+.LSOverride
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local AI assistant settings and working notes
+.agents/
+.claude/
+.codex/
+.cursor/
+.omp/
+.aider*
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+PLAN.md
+PLANS.md
+
+# Local verification records and screenshots (keep application image assets)
+/docs/verification.md
+/docs/evidence/
+/screenshots/
+
+# Local credentials, signing exports, and captured traffic
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.p12
+*.pfx
+*.pem
+*.key
+*.keychain
+*.keychain-db
+*.mobileprovision
+*.provisionprofile
+*.har
+*.log
+
+# Runtime exports accidentally copied into the repository
+/auth.json
+/credentials.json
+/connections-v*.json
+/snapshot-v*.json
+/antigravity-oauth.json

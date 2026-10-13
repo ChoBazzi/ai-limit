@@ -1,0 +1,3 @@
+{"id": 0, "result": {}}
+{"id": 1, "result": {"account": {"type": "chatgpt", "planType": "plus", "email": "never-share@example.invalid"}}}
+{"id": 2, "result": {"rateLimits": {"limitId": "codex", "planType": "pro", "primary": {"usedPercent": 25, "windowDurationMins": 300, "resetsAt": 1790812800}, "credits": {"balance": "12.34", "hasCredits": true}}, "rateLimitsByLimitId": {"codex": {"primary": {"usedPercent": 25}}, "other": {"limitName": "Other", "secondary": {"usedPercent": 40, "windowDurationMins": 10080}}}}}
