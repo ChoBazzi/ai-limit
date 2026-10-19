@@ -61,7 +61,7 @@ struct KiroDirectProvider: Sendable {
         let limit = try value.alias("usageLimitWithPrecision", "usageLimit").decimal()
         guard used != nil || limit != nil else { return nil }
         return QuotaWindow(id: id, title: title, used: used, limit: limit, unit: unit,
-                           resetsAt: reset, resetDescription: resetDescription)
+                           resetsAt: reset, resetPrecision: .exact, resetDescription: resetDescription)
     }
 
     private static func metricUnit(_ item: JSON) -> MetricUnit {

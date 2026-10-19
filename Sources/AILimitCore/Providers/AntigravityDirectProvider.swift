@@ -50,7 +50,7 @@ struct AntigravityDirectProvider: Sendable {
                 let reset = bucket.alias("resetTime", "reset_time").date ?? bucket.alias("resetAt", "reset_at").date
                 // Structural IDs never expose project/account IDs from the remote response.
                 windows.append(QuotaWindow(id: "group-\(groupIndex)-bucket-\(bucketIndex)", title: "\(groupName) · \(label)",
-                                           usedPercent: (1 - fraction) * 100, resetsAt: reset,
+                                           usedPercent: (1 - fraction) * 100, resetsAt: reset, resetPrecision: .exact,
                                            resetDescription: bucket["description"].string))
             }
         }

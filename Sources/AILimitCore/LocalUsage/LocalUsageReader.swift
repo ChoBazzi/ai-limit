@@ -21,7 +21,13 @@ public actor LocalUsageReader {
         var invalidPricing = false
     }
     struct Cached: Sendable {
-        let identity: String; let size: Int; let modified: Date; let records: [Record]; let partial: Bool
+        let identity: String; let size: Int; let modified: Date
+        var records: [Record] = []
+        var partial = false
+        var offset: UInt64 = 0
+        var buffer = Data()
+        var discardingLine = false
+        var finished = false
         var session: String? = nil
         var parentSession: String? = nil
     }
@@ -33,7 +39,17 @@ public actor LocalUsageReader {
         var previous: [TokenSummary] = []
     }
     private var accounts: [String: AccountCache] = [:]
-    public init() {}
+    private let scanByteLimit: Int
+    private let scanTimeLimit: Duration
+    public init() {
+        scanByteLimit = 128 * 1024 * 1024
+        scanTimeLimit = .seconds(5)
+    }
+    init(scanByteLimit: Int, scanTimeLimit: Duration = .seconds(5)) {
+        precondition(scanByteLimit > 0 && scanTimeLimit > .zero)
+        self.scanByteLimit = scanByteLimit
+        self.scanTimeLimit = scanTimeLimit
+    }
     public func scan(accountID: String, provider: ProviderID, root: URL, now: Date, calendar: Calendar = .current, source: LocalTokenSource = .native) -> LocalScanResult {
         guard provider == .codex || provider == .claude else { accounts.removeValue(forKey: accountID); return LocalScanResult(summaries: [], message: "로컬 토큰 지원 없음") }
         let root = root.standardizedFileURL
@@ -41,51 +57,81 @@ public actor LocalUsageReader {
         var cache = account.files
         account.files = [:]
         defer { account.files = cache; accounts[accountID] = account }
-        let started = Date(); var budget = 128 * 1024 * 1024; var count = 0; var partial = false; var denied = false; var records: [Record] = []; var visited: Set<URL> = []
+        let started = ContinuousClock.now
+        var budget = scanByteLimit; var count = 0; var partial = false; var denied = false; var records: [Record] = []; var visited: Set<URL> = []
+        var enumerationFinished = true
         if !FileManager.default.isReadableFile(atPath: root.path) { denied = true }
         let roots = source == .native && provider == .codex ? [root.appendingPathComponent("sessions"), root.appendingPathComponent("archived_sessions")] : [root]
         for directory in roots {
             if !FileManager.default.fileExists(atPath: directory.path) { if provider == .claude || source == .omp { denied = true }; continue }
             guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileResourceIdentifierKey, .fileSizeKey, .contentModificationDateKey], options: [.skipsHiddenFiles], errorHandler: { _, _ in denied = true; return false }) else { denied = true; continue }
             for case let url as URL in enumerator {
-                if Date().timeIntervalSince(started) >= 5 || budget <= 0 || count >= 2000 { partial = true; break }
+                if ContinuousClock.now - started >= scanTimeLimit || count >= 2000 { partial = true; enumerationFinished = false; break }
                 guard url.pathExtension == "jsonl" else { continue }
                 do {
                     let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileResourceIdentifierKey, .fileSizeKey, .contentModificationDateKey]); guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
                     count += 1; visited.insert(url); let size = values.fileSize ?? 0; let modified = values.contentModificationDate ?? .distantPast; let identity = String(describing: values.fileResourceIdentifier)
-                    if let old = cache[url], old.identity == identity, old.size == size, old.modified == modified { records.append(contentsOf: old.records); partial = partial || old.partial; continue }
-                    let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
-                    var buffer = Data(); var parsed: [Record] = []; var filePartial = false; var session: String?; var parentSession: String?
-                    while true {
-                        if budget <= 0 || Date().timeIntervalSince(started) >= 5 { filePartial = true; break }
-                        let chunk = try handle.read(upToCount: min(65_536, budget)) ?? Data(); if chunk.isEmpty { break }; budget -= chunk.count; buffer.append(chunk)
-                        while let newline = buffer.firstIndex(of: 10) {
-                            let line = buffer.prefix(upTo: newline)
-                            if line.count > 8 * 1024 * 1024 { filePartial = true } else if !line.isEmpty {
-                                do {
-                                    let json = try JSON(data: Data(line))
-                                    if source == .omp, json["type"].string == "session" {
-                                        session = nil
-                                        guard let id = json["id"].string, !id.isEmpty, let version = try json["version"].integer(), version == 2 || version == 3 else { throw UsageError.malformed }
-                                        session = id
-                                        parentSession = json["parentSession"].string
-                                        if !json["parentSession"].isNull && (parentSession?.isEmpty != false) { filePartial = true }
-                                    } else if source == .native, provider == .codex, json["type"].string == "session_meta" { session = json["payload"]["id"].string }
-                                    let record = try source == .omp ? decodeOMP(json, provider: provider, session: session) : decode(json, provider: provider, session: session)
-                                    if let record { parsed.append(record); if !record.complete || record.isPartial { filePartial = true } }
-                                } catch { filePartial = true }
+                    var file = cache.removeValue(forKey: url).flatMap {
+                        $0.identity == identity && $0.size == size && $0.modified == modified ? $0 : nil
+                    } ?? Cached(identity: identity, size: size, modified: modified)
+                    if !file.finished && budget > 0 {
+                        let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
+                        try handle.seek(toOffset: file.offset)
+                        while file.offset < UInt64(size) {
+                            if budget <= 0 || ContinuousClock.now - started >= scanTimeLimit { break }
+                            let chunk = try handle.read(upToCount: min(65_536, budget, size - Int(file.offset))) ?? Data()
+                            guard !chunk.isEmpty else { throw UsageError.malformed }
+                            budget -= chunk.count; file.offset += UInt64(chunk.count); file.buffer.append(chunk)
+                            while let newline = file.buffer.firstIndex(of: 10) {
+                                let line = file.buffer.prefix(upTo: newline)
+                                if file.discardingLine || line.count > 8 * 1024 * 1024 { file.partial = true }
+                                else if !line.isEmpty {
+                                    do {
+                                        let json = try JSON(data: Data(line))
+                                        if source == .omp, json["type"].string == "session" {
+                                            file.session = nil
+                                            guard let id = json["id"].string, !id.isEmpty, let version = try json["version"].integer(), version == 2 || version == 3 else { throw UsageError.malformed }
+                                            file.session = id
+                                            file.parentSession = json["parentSession"].string
+                                            if !json["parentSession"].isNull && (file.parentSession?.isEmpty != false) { file.partial = true }
+                                        } else if source == .native, provider == .codex, json["type"].string == "session_meta" { file.session = json["payload"]["id"].string }
+                                        let record = try source == .omp ? decodeOMP(json, provider: provider, session: file.session) : decode(json, provider: provider, session: file.session)
+                                        if let record {
+                                            file.records.append(record)
+                                            if record.isPartial { file.partial = true }
+                                        }
+                                    } catch { file.partial = true }
+                                }
+                                file.buffer.removeSubrange(...newline)
+                                file.discardingLine = false
                             }
-                            buffer.removeSubrange(...newline)
+                            // Skip an oversized record through its newline, without retaining
+                            // its contents or abandoning later valid records in this file.
+                            if file.discardingLine || file.buffer.count > 8 * 1024 * 1024 {
+                                file.partial = true; file.discardingLine = true; file.buffer.removeAll(keepingCapacity: false)
+                            }
                         }
-                        if buffer.count > 8 * 1024 * 1024 { filePartial = true; break }
+                        file.finished = file.offset == UInt64(size)
+                        if file.finished {
+                            if !file.buffer.isEmpty || file.discardingLine { file.partial = true }
+                            file.buffer.removeAll(keepingCapacity: false)
+                        }
+                        // Never combine a saved cursor with replaced, truncated or appended
+                        // contents. Restart on the next scan if the file changed while open.
+                        let current = try URL(fileURLWithPath: url.path).resourceValues(forKeys: [.fileResourceIdentifierKey, .fileSizeKey, .contentModificationDateKey])
+                        guard String(describing: current.fileResourceIdentifier) == identity,
+                              current.fileSize == size, current.contentModificationDate == modified else {
+                            partial = true
+                            continue
+                        }
                     }
-                    if !buffer.isEmpty { filePartial = true }
-                    cache[url] = Cached(identity: identity, size: size, modified: modified, records: parsed, partial: filePartial, session: session, parentSession: parentSession)
-                    records.append(contentsOf: parsed); partial = partial || filePartial
+                    records.append(contentsOf: file.records)
+                    partial = partial || file.partial || !file.finished
+                    cache[url] = file
                 } catch { denied = true; partial = true }
             }
         }
-        cache = cache.filter { visited.contains($0.key) }
+        if enumerationFinished { cache = cache.filter { visited.contains($0.key) } }
         partial = partial || denied
         if source == .omp {
             // Lineage can name a session ID or an opaque path. Only already-scanned
@@ -102,14 +148,18 @@ public actor LocalUsageReader {
             else { result = summaries; if !partial { account.previous = summaries } }
             return LocalScanResult(summaries: result, message: denied ? "OMP 기록 읽기 실패 · 권한과 폴더를 확인하세요." : partial ? "OMP 일부 기록만 확인됨 · 이전 완전한 결과가 있으면 유지합니다." : result.isEmpty ? "OMP 기록 없음 · 사용량 0을 의미하지 않습니다." : nil, overviewFacts: overviewFacts)
         }
-        var selected: [String: Record] = [:]; var conflicts: Set<String> = []
-        for record in records where record.complete {
+        var selected: [String: Record] = [:]; var conflicts: Set<String> = []; var incomplete: Set<String> = []
+        for record in records {
             let key = provider == .codex ? record.key + "@" + String(record.at.timeIntervalSince1970) : record.key
+            guard record.complete else { incomplete.insert(key); continue }
             if let old = selected[key] {
                 if record.at > old.at { selected[key] = record; conflicts.remove(key) }
-                else if record.at == old.at && record.counters != old.counters { conflicts.insert(key); partial = true }
+                else if record.at == old.at && record.counters != old.counters { conflicts.insert(key) }
             } else { selected[key] = record }
         }
+        // Native Claude streaming rows are provisional, not permanently malformed.
+        // A complete revision resolves the same request even across different files.
+        partial = partial || !conflicts.isEmpty || incomplete.contains { selected[$0] == nil }
         let valid = selected.filter { !conflicts.contains($0.key) }.map(\.value)
         var summaries: [TokenSummary] = []
         if provider == .codex {

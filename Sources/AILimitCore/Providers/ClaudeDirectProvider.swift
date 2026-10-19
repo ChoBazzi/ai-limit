@@ -12,7 +12,7 @@ public struct ClaudeDirectProvider: Sendable {
         for (key, title) in [("five_hour", "5시간"), ("seven_day", "주간"),
                              ("seven_day_sonnet", "Sonnet 주간"), ("seven_day_opus", "Opus 주간")] {
             guard let used = try json[key]["utilization"].number() else { continue }
-            windows.append(QuotaWindow(id: key, title: title, usedPercent: used, resetsAt: json[key]["resets_at"].date))
+            windows.append(QuotaWindow(id: key, title: title, usedPercent: used, resetsAt: json[key]["resets_at"].date, resetPrecision: .exact))
         }
         guard !windows.isEmpty else { throw UsageError.unavailable("Claude 계정의 사용 한도가 제공되지 않았습니다.") }
         try Task.checkCancellation()

@@ -269,6 +269,32 @@ final class UsageOverviewTests: XCTestCase {
         XCTAssertEqual(unpriced?.periods.first?.unpricedRecords, 1)
     }
 
+    func testEveryConflictingOriginalRevisionPoisonsForkCopiesRegardlessOfOrder() async throws {
+        let first = try directory()
+        let second = try directory()
+        let fork = try directory()
+        try save(header("parent") + entry("same", at: "2026-10-12T11:00:00Z", usage: "\"input\":10,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0"), at: first)
+        try save(header("parent") + entry("same", at: "2026-10-12T12:00:00Z", usage: "\"input\":20,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0"), at: second)
+        try save(header("fork") + entry("same", at: "2026-10-12T12:00:00Z", usage: "\"input\":20,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0"), at: fork)
+        let scans = [try await facts(first), try await facts(second), try await facts(fork)]
+        for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            let overview = try XCTUnwrap(LocalUsageOverview.aggregate(order.map { scans[$0] }, now: now, calendar: calendar()))
+            XCTAssertTrue(overview.isPartial)
+            for period in overview.periods {
+                XCTAssertEqual(period.recordCount, 0)
+                XCTAssertNil(period.tokens)
+                XCTAssertNil(period.estimatedUSD)
+            }
+        }
+        // The per-account OMP history must not resurrect the same poisoned fork.
+        let combined = try directory()
+        try save(header("parent") + entry("same", at: "2026-10-12T11:00:00Z") + entry("same", at: "2026-10-12T12:00:00Z"), at: combined)
+        try save(header("fork") + entry("same", at: "2026-10-12T12:00:00Z"), at: combined, name: "fork.jsonl")
+        let scan = await LocalUsageReader().scan(accountID: "combined", provider: .claude, root: combined, now: now, source: .omp)
+        XCTAssertTrue(scan.summaries.filter { $0.scope == "ompHistory" }.isEmpty)
+        XCTAssertNotNil(scan.message)
+    }
+
     func testConflictingForkAndOverflowDoNotBecomePlausibleTotals() async throws {
         let root = try directory()
         try save(header("a") + entry("same"), at: root)

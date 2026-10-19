@@ -55,6 +55,21 @@ final class ProviderTests: XCTestCase {
         let value = try await CopilotProvider().fetch(context: testContext(.copilot, cli: body)); XCTAssertEqual(value.windows.count, 1); XCTAssertEqual(value.windows[0].remainingPercent, 75); XCTAssertNil(value.windows[0].resetsAt); XCTAssertEqual(value.balances[0].amount, 31)
         let over = try await CopilotProvider().fetch(context: testContext(.copilot, cli: Data("HTTP/2.0 200 OK\n\n{\"quota_snapshots\":{\"chat\":{\"percent_remaining\":-25}}}".utf8))); XCTAssertEqual(over.windows[0].usedPercent, 125)
     }
+    func testCopilotDateOnlyAndTimestampResetsHaveDifferentClockPrecision() async throws {
+        for (reset, precision) in [("2026-10-13", ResetPrecision.dateOnly), ("2026-10-13T13:30:00Z", .exact)] {
+            let json = #"{"quota_reset_date":"\#(reset)","quota_snapshots":{"chat":{"percent_remaining":75}}}"#
+            let legacy = try await CopilotProvider().fetch(context: testContext(.copilot, cli: Data(("HTTP/2.0 200 OK\n\n" + json).utf8)))
+            let direct = try await CopilotDirectProvider().fetch(context: testContext(.copilot, responses: [
+                "/user": response(#"{"id":1}"#), "/copilot_internal/user": response(json)
+            ]), credential: DirectCredential(provider: .copilot, accessToken: "fixture", metadata: ["userID": "1"]))
+            for snapshot in [legacy, direct] {
+                let window = try XCTUnwrap(snapshot.windows.first)
+                XCTAssertNotNil(window.resetsAt)
+                XCTAssertEqual(window.resetPrecision, precision)
+                XCTAssertEqual(UsageFormat.resetTime(window, at: fixedNow) != nil, precision == .exact)
+            }
+        }
+    }
     func testWindsurfPresenceAndBounds() async throws {
         var status = Data([112, 70, 120, 40]); status.append(WindsurfProto.varint(17 << 3)); status.append(WindsurfProto.varint(1790812800))
         let payload = WindsurfProto.bytes(1, status)
@@ -80,6 +95,40 @@ final class ProviderTests: XCTestCase {
     func testKiroPairsAndPlanOnly() async throws {
         let value = try await KiroProvider().fetch(context: testContext(.kiro, cli: fixture("kiro.txt"))); XCTAssertEqual(value.windows[0].used, 10); XCTAssertEqual(value.windows[0].limit, 50); XCTAssertEqual(value.windows[0].remainingPercent, 80); XCTAssertEqual(value.windows[1].used, 3)
         let plan = try await KiroProvider().fetch(context: testContext(.kiro, cli: Data("Plan: KIRO PRO MAX | 1 usage breakdowns\n████ 55%".utf8))); XCTAssertEqual(plan.plan, "KIRO PRO MAX"); XCTAssertTrue(plan.windows.isEmpty)
+    }
+    func testKiroDateAndRelativeExpiryNeverGainClockPrecision() async throws {
+        let snapshot = try await KiroProvider().fetch(context: testContext(.kiro, cli: fixture("kiro.txt")))
+        XCTAssertEqual(snapshot.windows.map(\.resetPrecision), [.dateOnly, .approximate])
+        for window in snapshot.windows {
+            XCTAssertNotNil(window.resetsAt)
+            XCTAssertNil(UsageFormat.resetTime(window, at: fixedNow))
+        }
+        XCTAssertTrue(UsageFormat.resetSummary(snapshot.windows[1], at: fixedNow).hasPrefix("약 "))
+        XCTAssertTrue(UsageFormat.resetLabel(snapshot.windows[1], at: fixedNow).hasPrefix("약 "))
+    }
+    func testAnnotatedProviderTimestampsRetainClockAndCountdownAfterSharing() async throws {
+        let grok = try await GrokProvider().fetch(context: testContext(.grok, responses: [
+            "/v1/billing": response(#"{"config":{"creditUsagePercent":30,"currentPeriod":{"end":"2026-10-13T13:30:00Z"}}}"#)
+        ], secret: "bearer-token"))
+        let cursor = try await CursorProvider().fetch(context: testContext(.cursor, responses: [
+            "/api/usage-summary": response(#"{"billingCycleStart":"2026-09-13T13:30:00Z","billingCycleEnd":"2026-10-13T13:30:00Z","individualUsage":{"plan":{"totalPercentUsed":30}}}"#)
+        ], secret: "cursor=test"))
+        let antigravity = try await AntigravityProvider().fetch(context: testContext(.antigravity, cli: Data(
+            #"{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[{"name":"Gemini","buckets":[{"name":"daily","remainingFraction":0.7,"resetTime":"2026-10-13T13:30:00Z","description":"Daily limit"}]}]}}}"#.utf8)))
+        var status = Data([112, 70])
+        status.append(WindsurfProto.varint(17 << 3)); status.append(WindsurfProto.varint(1790812800))
+        status.append(WindsurfProto.bytes(2, Data([8]) + WindsurfProto.varint(1790726400)))
+        let windsurf = try WindsurfDirectProvider.decode(WindsurfProto.bytes(1, WindsurfProto.bytes(13, status)), now: fixedNow)
+        for usage in [grok, cursor, antigravity, windsurf] {
+            let shared = SharedSnapshot(updatedAt: fixedNow, providers: [ProviderState(provider: usage.provider, lastSuccess: usage)])
+            let window = try XCTUnwrap(SharedSnapshot.decode(shared.encoded()).providers[0].lastSuccess?.windows.first)
+            XCTAssertNotNil(window.resetDescription)
+            let reset = try XCTUnwrap(window.resetsAt)
+            let now = reset.addingTimeInterval(-3600)
+            XCTAssertNotNil(UsageFormat.resetTime(window, at: now))
+            XCTAssertEqual(UsageFormat.resetSummary(window, at: now), "1시간 후 리셋")
+            XCTAssertEqual(UsageFormat.resetLabel(window, at: now), reset.formatted(date: .abbreviated, time: .shortened) + " 리셋")
+        }
     }
     func testNumberAndCredentialBoundaries() throws {
         XCTAssertNil(try JSON(data: Data("null".utf8)).decimal()); XCTAssertEqual(try JSON(data: Data("0".utf8)).decimal(), 0)

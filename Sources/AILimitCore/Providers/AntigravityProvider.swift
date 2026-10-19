@@ -20,7 +20,7 @@ public struct AntigravityProvider: UsageProvider {
                 if fraction.isNull, ["remainingFraction", "remaining_fraction"].contains(bucket["remaining"]["case"].string ?? "") { fraction = bucket["remaining"]["value"] }
                 guard let value = try fraction.number(), value <= 1 else { continue }
                 let name = bucket.alias("displayName", "display_name").string ?? bucket["name"].string ?? bucket["window"].string ?? "한도"
-                windows.append(QuotaWindow(id: "\(groupIndex)." + (bucket.alias("bucketId", "bucket_id").string ?? bucket["id"].string ?? String(index)), title: groupName + " · " + name, usedPercent: (1 - value) * 100, resetsAt: bucket.alias("resetTime", "reset_time").date, resetDescription: bucket["description"].string))
+                windows.append(QuotaWindow(id: "\(groupIndex)." + (bucket.alias("bucketId", "bucket_id").string ?? bucket["id"].string ?? String(index)), title: groupName + " · " + name, usedPercent: (1 - value) * 100, resetsAt: bucket.alias("resetTime", "reset_time").date, resetPrecision: .exact, resetDescription: bucket["description"].string))
             }
         }
         guard !windows.isEmpty else { throw UsageError.unavailable("CLI가 알려진 사용 한도를 제공하지 않습니다.") }

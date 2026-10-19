@@ -27,13 +27,13 @@ public struct GrokDirectProvider: Sendable {
         let title = config["isUnifiedBillingUser"].bool == true ? "Grok 통합 크레딧" : "Grok Build 크레딧"
         var windows: [QuotaWindow] = []
         if let percent {
-            windows.append(QuotaWindow(id: "included", title: title, usedPercent: percent, resetsAt: reset, resetDescription: "웹 채팅의 모든 모델별 메시지 한도는 아닙니다."))
+            windows.append(QuotaWindow(id: "included", title: title, usedPercent: percent, resetsAt: reset, resetPrecision: .exact, resetDescription: "웹 채팅의 모든 모델별 메시지 한도는 아닙니다."))
         }
         // Official billing.rs Cent explicitly specifies USD cents for this REST response.
         // Missing val remains unavailable; do not infer zero from an omitted scalar.
         let used = try config["onDemandUsed"]["val"].decimal().map { $0 / 100 }
         let cap = try config["onDemandCap"]["val"].decimal().map { $0 / 100 }
-        if used != nil || cap != nil { windows.append(QuotaWindow(id: "onDemand", title: "추가 사용", used: used, limit: cap, unit: .currency(code: "USD"), resetsAt: reset)) }
+        if used != nil || cap != nil { windows.append(QuotaWindow(id: "onDemand", title: "추가 사용", used: used, limit: cap, unit: .currency(code: "USD"), resetsAt: reset, resetPrecision: .exact)) }
         var balances: [BalanceMetric] = []
         if let prepaid = try config["prepaidBalance"]["val"].decimal() {
             balances.append(BalanceMetric(id: "prepaid", title: "선불 크레딧 잔액", amount: prepaid / 100, unit: .currency(code: "USD")))

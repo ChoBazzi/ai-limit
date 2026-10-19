@@ -39,6 +39,7 @@ final class AppModel: ObservableObject {
     private let secrets: any SecretStore
     private let http: any HTTPTransport
     private var loop: Task<Void, Never>?
+    private var terminating = false
     private var wakeObserver: NSObjectProtocol?
     lazy var coordinator = UsageCoordinator(connections: settings.connections, secrets: secrets, http: http, store: SnapshotStore(fallbackDirectory: settingsStore.url.deletingLastPathComponent()), changed: { [weak self] snapshot, warning in
         Task { @MainActor in self?.snapshot = snapshot; self?.sharingMessage = warning; WidgetCenter.shared.reloadTimelines(ofKind: "dev.bazzi.ai-limit.usage") }
@@ -136,7 +137,7 @@ final class AppModel: ObservableObject {
         return panel.runModal() == .OK ? panel.url : nil
     }
     func startDirectLogin(_ id: ProviderID) {
-        guard !settingsCorrupt, !busy, oauthTask == nil else { return }
+        guard !terminating, !settingsCorrupt, !busy, oauthTask == nil else { return }
         var candidate = connection(id)
         do { candidate.accountName = try validatedAccountName() }
         catch { message = (error as? UsageError)?.localizedDescription; return }
@@ -220,9 +221,11 @@ final class AppModel: ObservableObject {
         }
     }
     private func commit(_ candidate: Connection, secret: String?, initial: UsageSnapshot) async throws {
+        guard !terminating else { throw CancellationError() }
         let old = settings.connections.first { $0.id == candidate.id }
         let oldSnapshot = snapshot.providers.first { $0.connectionID == candidate.id }?.lastSuccess
         if var paused = old { paused.enabled = false; await coordinator.replace(paused) }
+        guard !terminating else { throw CancellationError() }
         do {
             let previous = try secrets.load(candidate.id)
             if let secret { try secrets.save(secret, for: candidate.id) } else { try secrets.remove(candidate.id) }
@@ -270,10 +273,22 @@ final class AppModel: ObservableObject {
     }
     var canCancelOAuth: Bool { oauthTask != nil && !oauthCommitting }
     func prepareForTermination() async {
-        loop?.cancel(); cancelOAuth(); await oauthTask?.value
+        terminating = true
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+            self.wakeObserver = nil
+        }
+        loop?.cancel()
+        cancelOAuth()
+        // Cancelling the loop alone does not cancel the coordinator's unstructured
+        // jobs. Stop admission and drain protected credential rotations as well.
+        await coordinator.shutdown()
+        await loop?.value
+        await oauthTask?.value
+        loop = nil
     }
     func connect(_ id: ProviderID, rawSecret: String, executable: URL?, organization: String?, codexHome: URL?) async {
-        guard !settingsCorrupt, !busy else { return }; busy = true; message = nil; defer { busy = false }
+        guard !terminating, !settingsCorrupt, !busy else { return }; busy = true; message = nil; defer { busy = false }
         do {
             let credential = id.isCLI ? "" : try Credentials.validate(rawSecret, for: id)
             var candidate = connection(id)
@@ -294,9 +309,9 @@ final class AppModel: ObservableObject {
         } catch { message = (error as? UsageError)?.localizedDescription ?? "연결 또는 저장 실패. 기존 연결은 유지됩니다." }
     }
     func disconnect(_ accountID: String) async {
-        guard !settingsCorrupt else { return }
+        guard !terminating, !settingsCorrupt else { return }
         cancelOAuth(); await oauthTask?.value
-        guard !busy else { return }
+        guard !terminating, !busy else { return }
         busy = true
         defer { busy = false }
         guard let account = settings.connections.first(where: { $0.id == accountID }) else { return }
@@ -306,6 +321,7 @@ final class AppModel: ObservableObject {
             // Drain this account only: no late refresh can recreate its Keychain item.
             var paused = account; paused.enabled = false
             await coordinator.replace(paused)
+            guard !terminating else { return }
             try secrets.remove(accountID); try settingsStore.save(updated)
             settings = updated; await coordinator.disconnect(accountID)
             if selectedConnectionID == accountID { selectDefaultAccount() }
@@ -313,7 +329,7 @@ final class AppModel: ObservableObject {
         } catch { message = "연결 해제 저장 실패. 이 계정의 자동 조회를 중지했습니다. 다시 시도하세요." }
     }
     func connectLocal(_ id: ProviderID, source: LocalTokenSource = .native) async {
-        guard !settingsCorrupt, !busy else { return }
+        guard !terminating, !settingsCorrupt, !busy else { return }
         busy = true; defer { busy = false }
         var candidate = connection(id)
         do {
@@ -333,11 +349,14 @@ final class AppModel: ObservableObject {
     func resetSettings() async {
         cancelOAuth()
         await oauthTask?.value
-        guard !busy else { return }
+        guard !terminating, !busy else { return }
         busy = true
         defer { busy = false }
         do {
-            for account in settings.connections { await coordinator.disconnect(account.id) }
+            try await coordinator.reset()
+            guard !terminating else { return }
+            snapshot = await coordinator.current()
+            guard !terminating else { return }
             try secrets.removeAll()
             let fresh = ConnectionSettings(); try settingsStore.save(fresh)
             settings = fresh; settingsCorrupt = false; selectDefaultAccount()

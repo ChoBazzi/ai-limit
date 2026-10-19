@@ -52,7 +52,7 @@ public struct WindsurfDirectProvider: Sendable {
                 reset = Date(timeIntervalSince1970: Double(seconds))
             }
             let period = [start.map { "구독 시작 " + $0.formatted(date: .numeric, time: .omitted) }, end.map { "구독 종료 " + $0.formatted(date: .numeric, time: .omitted) }].compactMap { $0 }.joined(separator: " · ")
-            windows.append(QuotaWindow(id: id, title: title, usedPercent: 100 - Double(remaining), resetsAt: reset, resetDescription: period.isEmpty ? nil : period))
+            windows.append(QuotaWindow(id: id, title: title, usedPercent: 100 - Double(remaining), resetsAt: reset, resetPrecision: .exact, resetDescription: period.isEmpty ? nil : period))
         }
         guard !windows.isEmpty else { throw UsageError.unavailable("로그인했지만 Windsurf/Codeium seat 사용량이 제공되지 않습니다. Devin cloud 작업 수나 API 잔액은 조회하지 않습니다.") }
         return UsageSnapshot(provider: .windsurf, plan: plan, windows: windows, balances: [], source: .unofficialWeb, fetchedAt: now)

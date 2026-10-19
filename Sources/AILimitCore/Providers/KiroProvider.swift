@@ -19,8 +19,8 @@ public struct KiroProvider: UsageProvider {
             else if parts.count == 2 { let year = calendar.component(.year, from: context.now()); reset = calendar.date(from: DateComponents(year: year, month: parts[0], day: parts[1])); if let first = reset, first < calendar.startOfDay(for: context.now()) { reset = calendar.date(from: DateComponents(year: year + 1, month: parts[0], day: parts[1])) } }
         }
         var windows: [QuotaWindow] = []
-        if let pair = capture(#"\(([\d,.]+)\s+of\s+([\d,.]+)\s+covered in plan\)"#) { windows.append(QuotaWindow(id: "monthly", title: "월간 크레딧", used: try number(pair[0]), limit: try number(pair[1]), unit: .credits, resetsAt: reset, resetDescription: reset == nil ? nil : "날짜 단위 리셋(정확한 시각 미제공)")) }
-        if let pair = capture(#"Bonus[\s\S]*?([\d,.]+)\s*/\s*([\d,.]+)\s+credits used"#) { let days = capture(#"expires in\s+(\d+)\s+days"#)?.first.flatMap(Int.init); windows.append(QuotaWindow(id: "bonus", title: "보너스 크레딧", used: try number(pair[0]), limit: try number(pair[1]), unit: .credits, resetsAt: days.flatMap { calendar.date(byAdding: .day, value: $0, to: context.now()) }, resetDescription: days.map { "약 \($0)일 후 만료" })) }
+        if let pair = capture(#"\(([\d,.]+)\s+of\s+([\d,.]+)\s+covered in plan\)"#) { windows.append(QuotaWindow(id: "monthly", title: "월간 크레딧", used: try number(pair[0]), limit: try number(pair[1]), unit: .credits, resetsAt: reset, resetPrecision: .dateOnly, resetDescription: reset == nil ? nil : "날짜 단위 리셋(정확한 시각 미제공)")) }
+        if let pair = capture(#"Bonus[\s\S]*?([\d,.]+)\s*/\s*([\d,.]+)\s+credits used"#) { let days = capture(#"expires in\s+(\d+)\s+days"#)?.first.flatMap(Int.init); windows.append(QuotaWindow(id: "bonus", title: "보너스 크레딧", used: try number(pair[0]), limit: try number(pair[1]), unit: .credits, resetsAt: days.flatMap { calendar.date(byAdding: .day, value: $0, to: context.now()) }, resetPrecision: .approximate, resetDescription: days.map { "약 \($0)일 후 만료" })) }
         guard plan != nil || !windows.isEmpty else { throw UsageError.malformed }
         return snapshot(id, context, plan: plan, windows: windows)
     }

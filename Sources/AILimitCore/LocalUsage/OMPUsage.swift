@@ -92,7 +92,12 @@ extension LocalUsageReader {
         // latest session's own cumulative view (including inherited requests).
         struct HistoryKey: Hashable { let entry: String; let at: Date }
         var history: [HistoryKey: Record] = [:]
-        var historyConflicts: Set<HistoryKey> = []
+        // Reject every inherited revision of a conflicting original, including
+        // copies under another session header and a different revision timestamp.
+        var historyConflicts = Set(records.compactMap { row -> HistoryKey? in
+            guard conflicts.contains(row.key), let entry = row.entryID else { return nil }
+            return HistoryKey(entry: entry, at: row.at)
+        })
         for row in valid {
             guard let entry = row.entryID else { partial = true; continue }
             let key = HistoryKey(entry: entry, at: row.at)

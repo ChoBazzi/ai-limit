@@ -34,33 +34,42 @@ enum LocalUsageOverview {
         // Use all consented scans together: account labels and folder paths are not identities.
         var original: [Key: Row] = [:]
         var rejected: Set<Key> = []
+        var inheritedIdentities: [Key: Set<Key>] = [:]
+        var incompleteNative: Set<Key> = []
         for scan in scans where !(scan.provider == .codex && scan.source == .native) {
             for record in scan.records {
                 let key = Key(provider: scan.provider, source: scan.source.rawValue, identity: record.key)
-                if !record.complete {
-                    partial = true
-                    if scan.source == .omp {
-                        rejected.insert(key)
-                    }
-                    continue
-                }
                 // Future events are not consumption observed by this scan, even if a
                 // later refresh of another account has advanced the aggregate clock.
                 guard record.at <= min(now, scan.observedAt) else { continue }
+                if scan.source == .omp {
+                    let inherited = Key(provider: scan.provider, source: key.source, identity: record.entryID ?? record.key, at: record.at)
+                    inheritedIdentities[key, default: []].insert(inherited)
+                }
+                if !record.complete {
+                    if scan.source == .omp { rejected.insert(key) }
+                    else { incompleteNative.insert(key) }
+                    continue
+                }
                 let row = Row(provider: scan.provider, record: record)
                 if let old = original[key] {
                     if scan.source == .native, record.at > old.record.at {
                         original[key] = row; rejected.remove(key)
                     } else if scan.source == .omp || record.at == old.record.at {
-                        if !equivalent(old.record, record) { rejected.insert(key); partial = true }
+                        if !equivalent(old.record, record) { rejected.insert(key) }
                     }
                 } else { original[key] = row }
             }
         }
+        partial = partial || !rejected.isEmpty || incompleteNative.contains { original[$0] == nil }
         // Forks retain entry IDs and timestamps. Short IDs can be reused at a
         // different time; only the pair identifies an inherited request.
         var requests: [Key: Row] = [:]
-        var conflicts: Set<Key> = []
+        // Every revision of a rejected original poisons its inherited identity,
+        // not just the timestamp of whichever revision happened to be seen first.
+        var conflicts = rejected.reduce(into: Set<Key>()) { result, key in
+            result.formUnion(inheritedIdentities[key] ?? [])
+        }
         for (key, row) in original {
             let record = row.record
             let isOMP = key.source == LocalTokenSource.omp.rawValue

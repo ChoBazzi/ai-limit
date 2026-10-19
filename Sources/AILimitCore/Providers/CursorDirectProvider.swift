@@ -21,10 +21,10 @@ public struct CursorDirectProvider: Sendable {
         let percent = try plan["totalPercentUsed"].number()
         var windows: [QuotaWindow] = []
         if used != nil || limit != nil || percent != nil {
-            windows.append(QuotaWindow(id: "included", title: "포함 사용량", used: used, limit: limit, unit: .currency(code: "USD"), usedPercent: percent, resetsAt: reset))
+            windows.append(QuotaWindow(id: "included", title: "포함 사용량", used: used, limit: limit, unit: .currency(code: "USD"), usedPercent: percent, resetsAt: reset, resetPrecision: .exact))
         }
         for (key, title) in [("autoPercentUsed", "Auto 풀"), ("apiPercentUsed", "API 풀")] {
-            if let value = try plan[key].number() { windows.append(QuotaWindow(id: key, title: title, usedPercent: value, resetsAt: reset)) }
+            if let value = try plan[key].number() { windows.append(QuotaWindow(id: key, title: title, usedPercent: value, resetsAt: reset, resetPrecision: .exact)) }
         }
         guard !windows.isEmpty else { throw UsageError.unavailable("이 Cursor 계정에서 개인 사용량이 제공되지 않습니다. 조직·구독 호환성을 확인하세요.") }
         return UsageSnapshot(provider: .cursor, plan: root["membershipType"].string, windows: windows, balances: [], source: .unofficialWeb, fetchedAt: now)

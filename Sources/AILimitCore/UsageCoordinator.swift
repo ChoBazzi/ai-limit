@@ -22,6 +22,16 @@ public struct SnapshotStore: Sendable {
         if let primary, let fallback { return primary.updatedAt >= fallback.updatedAt ? primary : fallback }
         return primary ?? fallback
     }
+    fileprivate func clear(_ snapshot: SharedSnapshot) throws -> Bool {
+        let data = try snapshot.encoded()
+        // Reset both copies: a fallback from an earlier sharing failure must not
+        // reappear on a later launch. Do not report success if either write fails.
+        for target in Set([fallbackURL] + (groupURL.map { [$0] } ?? [])) {
+            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: target, options: .atomic)
+        }
+        return groupURL != nil
+    }
 }
 private actor FetchSlots {
     private var active = 0
@@ -49,6 +59,8 @@ public actor UsageCoordinator {
     private var generations: [String: Int] = [:]
     private var jobs: [String: Task<Void, Never>] = [:]
     private var transitioning: Set<String> = []
+    private var stopped = false
+    private var resetting = false
     private var overviewScans: [String: (generation: Int, facts: LocalOverviewFacts)] = [:]
     private var usageOverview: UsageOverview?
     private let secrets: any SecretStore; private let http: any HTTPTransport; private let process: any ProcessRunning; private let now: @Sendable () -> Date; private let store: SnapshotStore; private let local = LocalUsageReader(); private let slots = FetchSlots(); private let changed: @Sendable (SharedSnapshot, String?) -> Void
@@ -78,6 +90,7 @@ public actor UsageCoordinator {
     private var orderedIDs: [String] { ProviderID.allCases.flatMap { provider in order.filter { connections[$0]?.provider == provider } } }
     public func current() -> SharedSnapshot { SharedSnapshot(updatedAt: now(), providers: orderedIDs.compactMap { states[$0] }, usageOverview: usageOverview) }
     public func replace(_ connection: Connection, initial: UsageSnapshot? = nil) async {
+        guard !stopped, !resetting else { return }
         let id = connection.id
         guard Connection.validID(id), !connection.accountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               initial == nil || initial?.provider == connection.provider else { return }
@@ -89,12 +102,14 @@ public actor UsageCoordinator {
         rebuildOverview()
         transitioning.insert(id)
         defer { if generations[id] == generation { transitioning.remove(id) } }
-        let previousJob = jobs.removeValue(forKey: id)
+        // Keep draining jobs registered so shutdown/reset also await transitions.
+        let previousJob = jobs[id]
         previousJob?.cancel()
         await previousJob?.value
-        guard generations[id] == generation else { return }
+        guard !stopped, !resetting, generations[id] == generation else { return }
+        jobs.removeValue(forKey: id)
         if localChanged { await local.forget(id) }
-        guard generations[id] == generation else { return }
+        guard !stopped, !resetting, generations[id] == generation else { return }
         if connections[id] == nil { order.append(id) }
         connections[id] = connection
         let old = states[id]
@@ -103,17 +118,18 @@ public actor UsageCoordinator {
         persist()
     }
     public func rename(_ accountID: String, accountName: String) async {
-        guard !accountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, connections[accountID] != nil else { return }
+        guard !stopped, !resetting, !accountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, connections[accountID] != nil else { return }
         connections[accountID]?.accountName = accountName
         states[accountID]?.accountName = accountName
         persist()
     }
     public func disconnect(_ id: String) async {
+        guard !stopped, !resetting else { return }
         generations[id, default: 0] += 1
         let generation = generations[id, default: 0]
         transitioning.insert(id)
         defer { if generations[id] == generation { transitioning.remove(id) } }
-        let previousJob = jobs.removeValue(forKey: id)
+        let previousJob = jobs[id]
         previousJob?.cancel()
         connections.removeValue(forKey: id)
         order.removeAll { $0 == id }
@@ -122,12 +138,48 @@ public actor UsageCoordinator {
         rebuildOverview()
         persist()
         await previousJob?.value
-        guard generations[id] == generation else { return }
+        guard !stopped, !resetting, generations[id] == generation else { return }
+        jobs.removeValue(forKey: id)
         await local.forget(id)
-        guard generations[id] == generation else { return }
+        guard !stopped, !resetting, generations[id] == generation else { return }
         persist()
     }
+    /// Stop admission before awaiting jobs, including jobs being drained by replace.
+    /// Protected rotating-token exchanges finish saving before this returns.
+    public func shutdown() async {
+        stopped = true
+        let pending = Array(jobs.values)
+        for task in pending { task.cancel() }
+        for task in pending { await task.value }
+        jobs.removeAll()
+    }
+    /// Explicit user reset also clears an orphaned on-disk snapshot when settings
+    /// could not be loaded. Initialization alone never writes or accesses secrets.
+    public func reset() async throws {
+        guard !stopped, !resetting else { return }
+        resetting = true
+        defer { resetting = false }
+        let ids = Set(connections.keys).union(jobs.keys)
+        for id in ids { generations[id, default: 0] += 1 }
+        let pending = Array(jobs.values)
+        for task in pending { task.cancel() }
+        connections.removeAll(); order.removeAll(); states.removeAll()
+        overviewScans.removeAll(); usageOverview = nil
+        for task in pending { await task.value }
+        jobs.removeAll(); transitioning.removeAll()
+        for id in ids { await local.forget(id) }
+        guard !stopped else { return }
+        let value = current()
+        do {
+            let shared = try store.clear(value)
+            changed(value, shared ? nil : "위젯 공유 설정 필요")
+        } catch {
+            changed(value, "사용량 파일 저장 실패 · 디스크와 권한을 확인하세요.")
+            throw error
+        }
+    }
     public func refresh(only: String? = nil) async {
+        guard !stopped, !resetting, !Task.isCancelled else { return }
         var pending: [Task<Void, Never>] = []
         for id in orderedIDs where only == nil || only == id {
             guard !transitioning.contains(id) else { continue }
@@ -150,7 +202,7 @@ public actor UsageCoordinator {
             do { let value = try await Providers.make(connection.provider).fetch(context: context); state.lastSuccess = value; state.status = .ready; state.message = value.windows.isEmpty && value.balances.isEmpty ? "사용량 미제공" : nil; state.retryAfter = nil }
             catch { state.message = (error as? UsageError)?.localizedDescription ?? "조회 실패"; switch error { case UsageError.authentication: state.status = .needsAuthentication; case UsageError.unavailable: state.status = .unavailable; case UsageError.rateLimited(let date): state.status = .unavailable; state.retryAfter = date; default: state.status = .failed } }
         }
-        if !Task.isCancelled, let folder = connection.localFolder, connection.localConsentedAt != nil {
+        if !Task.isCancelled, generations[id, default: 0] == generation, let folder = connection.localFolder, connection.localConsentedAt != nil {
             let result = await local.scan(accountID: id, provider: connection.provider, root: folder, now: now(), source: connection.localSource ?? .native); state.localTokens = result.summaries; state.localMessage = result.message
             overviewFacts = result.overviewFacts
         }

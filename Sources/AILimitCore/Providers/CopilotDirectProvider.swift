@@ -15,6 +15,7 @@ public struct CopilotDirectProvider: Sendable {
         headers["X-Github-Api-Version"] = "2025-04-01"
         let json = try JSON(data: await context.get(HTTPRequest("https://api.github.com/copilot_internal/user", headers: headers)))
         let quotas = json["quota_snapshots"]
+        let resetPrecision: ResetPrecision = json["quota_reset_date"].string?.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil ? .dateOnly : .exact
         var windows: [QuotaWindow] = []
         var balances: [BalanceMetric] = []
         for (key, title) in [("premium_interactions", "Premium"), ("chat", "Chat")] {
@@ -30,7 +31,7 @@ public struct CopilotDirectProvider: Sendable {
             }
             if let used, !used.isFinite || used < 0 { throw UsageError.malformed }
             guard used != nil || unlimited else { continue }
-            windows.append(QuotaWindow(id: key, title: title, usedPercent: used, unlimited: unlimited, resetsAt: json["quota_reset_date"].date))
+            windows.append(QuotaWindow(id: key, title: title, usedPercent: used, unlimited: unlimited, resetsAt: json["quota_reset_date"].date, resetPrecision: resetPrecision))
         }
         // The two quotas can report the same credit pool. Never sum them.
         if let credits = try quotas["premium_interactions"]["credits_used"].decimal() ?? quotas["chat"]["credits_used"].decimal() {

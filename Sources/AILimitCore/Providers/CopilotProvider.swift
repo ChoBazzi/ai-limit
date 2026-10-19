@@ -12,6 +12,7 @@ public struct CopilotProvider: UsageProvider {
         let data = try HTTPResponse(status: status, headers: headers, body: Data(text[split.upperBound...].utf8)).checked(now: context.now())
         guard output.status == 0 else { throw UsageError.authentication }
         let json = try JSON(data: data); let quotas = json["quota_snapshots"]; var windows: [QuotaWindow] = []; var balances: [BalanceMetric] = []
+        let resetPrecision: ResetPrecision = json["quota_reset_date"].string?.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil ? .dateOnly : .exact
         for (key, title) in [("premium_interactions", "Premium"), ("chat", "Chat")] {
             let quota = quotas[key]; guard !quota.isNull else { continue }
             let entitlement = try quota["entitlement"].decimal(); let remaining = try quota["remaining"].decimal(); let unlimited = quota["unlimited"].bool == true
@@ -19,7 +20,7 @@ public struct CopilotProvider: UsageProvider {
             var used = try quota["percent_remaining"].number(allowNegative: true).map { 100 - $0 }
             if used == nil, let entitlement, entitlement > 0, let remaining { used = NSDecimalNumber(decimal: (entitlement - remaining) / entitlement * 100).doubleValue }
             if let used, used < 0 { throw UsageError.malformed }
-            windows.append(QuotaWindow(id: key, title: title, usedPercent: used, unlimited: unlimited, resetsAt: json["quota_reset_date"].date))
+            windows.append(QuotaWindow(id: key, title: title, usedPercent: used, unlimited: unlimited, resetsAt: json["quota_reset_date"].date, resetPrecision: resetPrecision))
         }
         if let credits = try quotas["premium_interactions"]["credits_used"].decimal() ?? quotas["chat"]["credits_used"].decimal() { balances.append(BalanceMetric(id: "credits_used", title: "사용 크레딧", amount: credits, unit: .credits)) }
         return snapshot(id, context, plan: json["copilot_plan"].string, windows: windows, balances: balances)

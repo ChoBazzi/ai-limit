@@ -83,7 +83,7 @@ public struct CodexDirectProvider: Sendable {
             let duration = UsageFormat.limitTitle(seconds: seconds)
             let label = name.map { $0 + " · " + duration } ?? duration
             result.append(QuotaWindow(id: prefix + key, title: label, usedPercent: used,
-                                      resetsAt: window.alias("resets_at", "reset_at").date))
+                                      resetsAt: window.alias("resets_at", "reset_at").date, resetPrecision: .exact))
         }
         return result
     }

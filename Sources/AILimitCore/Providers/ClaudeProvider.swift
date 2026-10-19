@@ -17,7 +17,7 @@ public struct ClaudeProvider: UsageProvider {
         let usage = try JSON(data: await context.get(HTTPRequest(base + "/usage", headers: headers)))
         var windows: [QuotaWindow] = []; var balances: [BalanceMetric] = []
         for (key, title) in [("five_hour", "5시간"), ("seven_day", "주간"), ("seven_day_sonnet", "Sonnet 주간"), ("seven_day_opus", "Opus 주간")] where !usage[key].isNull {
-            windows.append(QuotaWindow(id: key, title: title, usedPercent: try usage[key]["utilization"].number(), resetsAt: usage[key]["resets_at"].date))
+            windows.append(QuotaWindow(id: key, title: title, usedPercent: try usage[key]["utilization"].number(), resetsAt: usage[key]["resets_at"].date, resetPrecision: .exact))
         }
         async let overage = try? context.get(HTTPRequest(base + "/overage_spend_limit", headers: headers, timeout: 5))
         async let prepaid = try? context.get(HTTPRequest(base + "/prepaid/credits", headers: headers, timeout: 5))

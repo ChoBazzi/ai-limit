@@ -118,11 +118,18 @@ struct AuthenticatedUsageProvider: UsageProvider {
         guard context.connection.enabled, context.connection.consentedAt != nil else { throw UsageError.authentication }
         var credential = try DirectCredential.decode(context.secret(), for: id)
         if let expires = credential.expiresAt, expires <= context.now().addingTimeInterval(credential.refreshToken == nil ? 0 : 120) {
-            credential = try await DirectAuthentication.refreshed(credential, context: context)
-            credential = try DirectCredential.decode(credential.encoded(), for: id)
             try Task.checkCancellation()
-            // Persist rotating refresh tokens before quota fetch; a failed quota request must not lose them.
-            try context.secrets.save(credential.encoded(), for: context.connection.id)
+            let expiring = credential
+            // A refresh can consume a one-use token. Once started, finish the exchange
+            // and persist its replacement even if the caller is cancelled. Lifecycle
+            // transitions await fetch completion before replacing/removing secrets.
+            credential = try await Task {
+                let refreshed = try await DirectAuthentication.refreshed(expiring, context: context)
+                let validated = try DirectCredential.decode(refreshed.encoded(), for: id)
+                try context.secrets.save(validated.encoded(), for: context.connection.id)
+                return validated
+            }.value
+            try Task.checkCancellation()
         }
         let result: UsageSnapshot
         switch id {

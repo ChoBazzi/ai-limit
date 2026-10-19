@@ -9,20 +9,46 @@ final class RemainingQuotaTests: XCTestCase {
         let day = calendar.startOfDay(for: now)
         for (hour, expected) in [(0, "00:30"), (12, "12:30"), (13, "13:30"), (23, "23:30")] {
             let reset = try XCTUnwrap(calendar.date(bySettingHour: hour, minute: 30, second: 0, of: day))
-            let window = QuotaWindow(id: "daily", title: "일간", resetsAt: reset)
+            let window = QuotaWindow(id: "daily", title: "일간", resetsAt: reset, resetPrecision: .exact)
             XCTAssertEqual(UsageFormat.resetTime(window, at: day), expected)
         }
         let tomorrow = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: day))
         let afternoon = try XCTUnwrap(calendar.date(bySettingHour: 13, minute: 30, second: 0, of: tomorrow))
-        var window = QuotaWindow(id: "daily", title: "일간", resetsAt: afternoon)
+        var window = QuotaWindow(id: "daily", title: "일간", resetsAt: afternoon, resetPrecision: .exact)
         let otherDay = try XCTUnwrap(UsageFormat.resetTime(window, at: day))
         XCTAssertNotEqual(otherDay, "13:30")
         XCTAssertTrue(otherDay.hasSuffix("13:30"))
-        window.resetDescription = "정확한 시각 미제공"
-        XCTAssertNil(UsageFormat.resetTime(window, at: day))
-        window.resetDescription = nil
+        let summary = UsageFormat.resetSummary(window, at: day)
+        let label = UsageFormat.resetLabel(window, at: day)
+        window.resetDescription = "구독 종료 안내"
+        XCTAssertEqual(UsageFormat.resetTime(window, at: day), otherDay)
+        XCTAssertEqual(UsageFormat.resetSummary(window, at: day), summary)
+        XCTAssertEqual(UsageFormat.resetLabel(window, at: day), label)
+        for precision in [ResetPrecision.dateOnly, .approximate, .unknown] {
+            window.resetPrecision = precision
+            XCTAssertNil(UsageFormat.resetTime(window, at: day))
+            XCTAssertNotEqual(UsageFormat.resetSummary(window, at: day), summary)
+            XCTAssertNotEqual(UsageFormat.resetLabel(window, at: day), label)
+        }
+        window.resetPrecision = .exact
         window.resetsAt = nil
         XCTAssertNil(UsageFormat.resetTime(window, at: day))
+    }
+
+    func testLegacyAndFuturePrecisionNeverInventResetClocks() throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        for precision in ["", #","resetPrecision":null"#, #","resetPrecision":"futurePrecision""#] {
+            let data = Data(#"{"id":"quota","title":"한도","unit":{"percent":{}},"unlimited":false,"resetsAt":"2026-10-13T13:30:00Z"\#(precision)}"#.utf8)
+            let window = try decoder.decode(QuotaWindow.self, from: data)
+            XCTAssertNil(UsageFormat.resetTime(window, at: now))
+            let snapshot = SharedSnapshot(updatedAt: now, providers: [
+                ProviderState(provider: .grok, lastSuccess: UsageSnapshot(provider: .grok, windows: [window], source: .unofficialWeb, fetchedAt: now))
+            ])
+            let restored = try SharedSnapshot.decode(snapshot.encoded()).providers[0].lastSuccess!.windows[0]
+            XCTAssertEqual(restored.resetsAt, window.resetsAt)
+            XCTAssertNil(UsageFormat.resetTime(restored, at: now))
+        }
     }
 
     func testRemainingGaugeBoundariesDoNotRewriteObservedUsage() throws {

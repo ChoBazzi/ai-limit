@@ -16,7 +16,7 @@ public struct WindsurfProvider: UsageProvider {
         let start = try WindsurfProto.timestamp(WindsurfProto.payload(status, 2)); let end = try WindsurfProto.timestamp(WindsurfProto.payload(status, 3)); var windows: [QuotaWindow] = []
         for (field, reset, title) in [(14, 17, "일간"), (15, 18, "주간")] {
             guard let percent = try WindsurfProto.integer(status, field) else { continue }; guard percent <= 100 else { throw UsageError.malformed }
-            windows.append(QuotaWindow(id: String(field), title: title, usedPercent: 100 - Double(percent), resetsAt: try WindsurfProto.integer(status, reset).map { Date(timeIntervalSince1970: Double($0)) }, resetDescription: [start.map { "시작 " + $0.formatted(date: .numeric, time: .omitted) }, end.map { "종료 " + $0.formatted(date: .numeric, time: .omitted) }].compactMap { $0 }.joined(separator: " · ")))
+            windows.append(QuotaWindow(id: String(field), title: title, usedPercent: 100 - Double(percent), resetsAt: try WindsurfProto.integer(status, reset).map { Date(timeIntervalSince1970: Double($0)) }, resetPrecision: .exact, resetDescription: [start.map { "시작 " + $0.formatted(date: .numeric, time: .omitted) }, end.map { "종료 " + $0.formatted(date: .numeric, time: .omitted) }].compactMap { $0 }.joined(separator: " · ")))
         }
         guard !windows.isEmpty else { throw UsageError.unavailable("현재 응답에 일간·주간 한도가 없습니다.") }
         return snapshot(id, context, plan: name, windows: windows)

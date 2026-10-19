@@ -42,10 +42,16 @@ public enum MetricUnit: Codable, Sendable, Equatable {
     case percent, credits, requests, reportedUnits, currency(code: String), providerUnits(name: String)
     public var label: String { switch self { case .percent: "%"; case .credits: "크레딧"; case .requests: "요청"; case .reportedUnits: "보고된 추가 사용 단위"; case .currency(let code): code; case .providerUnits(let name): name } }
 }
+public enum ResetPrecision: String, Codable, Sendable {
+    case exact, dateOnly, approximate, unknown
+    public init(from decoder: any Decoder) throws {
+        self = Self(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown
+    }
+}
 public struct QuotaWindow: Codable, Sendable, Identifiable {
-    public var id: String; public var title: String; public var used: Decimal?; public var limit: Decimal?; public var remaining: Decimal?; public var unit: MetricUnit; public var usedPercent: Double?; public var unlimited: Bool; public var resetsAt: Date?; public var resetDescription: String?
-    public init(id: String, title: String, used: Decimal? = nil, limit: Decimal? = nil, remaining: Decimal? = nil, unit: MetricUnit = .percent, usedPercent: Double? = nil, unlimited: Bool = false, resetsAt: Date? = nil, resetDescription: String? = nil) {
-        self.id = id; self.title = title; self.used = used; self.limit = limit; self.remaining = remaining; self.unit = unit; self.usedPercent = usedPercent; self.unlimited = unlimited; self.resetsAt = resetsAt; self.resetDescription = resetDescription
+    public var id: String; public var title: String; public var used: Decimal?; public var limit: Decimal?; public var remaining: Decimal?; public var unit: MetricUnit; public var usedPercent: Double?; public var unlimited: Bool; public var resetsAt: Date?; public var resetPrecision: ResetPrecision?; public var resetDescription: String?
+    public init(id: String, title: String, used: Decimal? = nil, limit: Decimal? = nil, remaining: Decimal? = nil, unit: MetricUnit = .percent, usedPercent: Double? = nil, unlimited: Bool = false, resetsAt: Date? = nil, resetPrecision: ResetPrecision? = nil, resetDescription: String? = nil) {
+        self.id = id; self.title = title; self.used = used; self.limit = limit; self.remaining = remaining; self.unit = unit; self.usedPercent = usedPercent; self.unlimited = unlimited; self.resetsAt = resetsAt; self.resetPrecision = resetPrecision; self.resetDescription = resetDescription
         if self.usedPercent == nil, let used, let limit, limit > 0 { self.usedPercent = NSDecimalNumber(decimal: used / limit * 100).doubleValue }
     }
     public var remainingPercent: Double? { usedPercent.map { 100 - $0 } }
@@ -297,8 +303,8 @@ public enum UsageFormat {
     public static func resetSummary(_ window: QuotaWindow, at now: Date) -> String {
         guard let reset = window.resetsAt else { return "리셋 정보 미제공" }
         guard reset > now else { return "리셋 지남 · 갱신 필요" }
-        guard window.resetDescription == nil else {
-            return reset.formatted(.dateTime.month(.twoDigits).day(.twoDigits)) + " 리셋 · 시각 미제공"
+        guard window.resetPrecision == .exact else {
+            return (window.resetPrecision == .approximate ? "약 " : "") + reset.formatted(.dateTime.month(.twoDigits).day(.twoDigits)) + " 리셋 · 시각 미제공"
         }
         let seconds = reset.timeIntervalSince(now)
         if seconds < 60 { return "1분 이내 리셋" }
@@ -318,7 +324,7 @@ public enum UsageFormat {
     }
 
     public static func resetTime(_ window: QuotaWindow, at now: Date) -> String? {
-        guard let reset = window.resetsAt, window.resetDescription == nil else { return nil }
+        guard let reset = window.resetsAt, window.resetPrecision == .exact else { return nil }
         let time = reset.formatted(Date.VerbatimFormatStyle(
             format: "\(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits)",
             timeZone: .current, calendar: .current
@@ -335,7 +341,7 @@ public enum UsageFormat {
 
     public static func resetLabel(_ window: QuotaWindow, at now: Date) -> String {
         guard let reset = window.resetsAt else { return "리셋 정보 미제공" }
-        let date = reset.formatted(date: .abbreviated, time: window.resetDescription == nil ? .shortened : .omitted)
+        let date = (window.resetPrecision == .approximate ? "약 " : "") + reset.formatted(date: .abbreviated, time: window.resetPrecision == .exact ? .shortened : .omitted)
         return reset <= now ? "리셋 지남 · " + date : date + " 리셋"
     }
     public static func menuTitle(_ state: ProviderState, at now: Date) -> String {

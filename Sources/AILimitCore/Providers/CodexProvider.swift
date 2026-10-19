@@ -18,7 +18,7 @@ public struct CodexProvider: UsageProvider {
                 let duration = minutes?.multipliedReportingOverflow(by: 60)
                 guard duration?.overflow != true else { throw UsageError.malformed }
                 let title = UsageFormat.limitTitle(seconds: duration?.partialValue)
-                windows.append(QuotaWindow(id: key + "." + kind, title: name == "Codex" || name == "codex" ? title : name + " · " + title, usedPercent: try window["usedPercent"].number(), resetsAt: window["resetsAt"].date))
+                windows.append(QuotaWindow(id: key + "." + kind, title: name == "Codex" || name == "codex" ? title : name + " · " + title, usedPercent: try window["usedPercent"].number(), resetsAt: window["resetsAt"].date, resetPrecision: .exact))
             }
             let credits = rate["credits"]
             if let balance = try credits["balance"].decimal() { balances.append(BalanceMetric(id: key + ".credits", title: name + " 크레딧 잔액", amount: balance, unit: .credits)) }

@@ -4,12 +4,15 @@ import AILimitShared
 
 @main
 struct AILimitApp: App {
-    @StateObject private var model = AppModel()
+    @StateObject private var model: AppModel
     @NSApplicationDelegateAdaptor(AILimitAppDelegate.self) private var appDelegate
+    init() {
+        let model = _appDelegate.wrappedValue.model
+        _model = StateObject(wrappedValue: model)
+    }
     var body: some Scene {
         MenuBarExtra {
             MenuPanel().environmentObject(model).preferredColorScheme(model.colorScheme)
-                .onAppear { appDelegate.model = model }
         } label: {
             let title = model.menuTitle(at: model.menuDate)
             HStack(spacing: 4) {
@@ -25,7 +28,6 @@ struct AILimitApp: App {
                     Task { await model.coordinator.refresh() }
                 }
                 .onAppear {
-                    appDelegate.model = model
                     Task { await model.coordinator.refresh() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
@@ -37,12 +39,12 @@ struct AILimitApp: App {
 
 @MainActor
 final class AILimitAppDelegate: NSObject, NSApplicationDelegate {
-    weak var model: AppModel?
+    // Own the model before any window/menu appears, including background launches.
+    let model = AppModel()
     private var terminating = false
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminating else { return .terminateLater }
-        guard let model else { return .terminateNow }
         terminating = true
         Task {
             await model.prepareForTermination()
