@@ -295,6 +295,63 @@ final class UsageOverviewTests: XCTestCase {
         XCTAssertNotNil(scan.message)
     }
 
+    func testInvalidOMPRevisionRetainsInheritedTimestampBeforeUsageValidation() async throws {
+        let invalidUsage = [
+            "\"input\":-1",
+            "\"input\":\"malformed\"",
+            "\"totalTokens\":9223372036854775808",
+            "\"input\":9223372036854775807,\"output\":1,\"cacheRead\":0,\"cacheWrite\":0"
+        ]
+        for (index, usage) in invalidUsage.enumerated() {
+            let root = try directory()
+            let old = entry("same", at: "2026-10-12T11:00:00Z")
+            var invalid = entry("same", usage: usage)
+            if index == 1 {
+                let milliseconds = Int64(date("2026-10-12T12:00:00Z").timeIntervalSince1970 * 1000)
+                invalid = invalid.replacingOccurrences(of: "\"timestamp\":\"2026-10-12T12:00:00Z\",", with: "")
+                    .replacingOccurrences(of: "\"role\":\"assistant\"", with: "\"role\":\"assistant\",\"timestamp\":\(milliseconds)")
+            }
+            for reversed in [false, true] {
+                try save(header("parent") + (reversed ? invalid + old : old + invalid), at: root)
+                try save(header("fork") + entry("same", usage: "\"input\":20,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0"), at: root, name: "fork.jsonl")
+                // A reused short ID at another timestamp must remain independent.
+                try save(header("unrelated") + entry("same", at: "2026-10-12T13:00:00Z"), at: root, name: "unrelated.jsonl")
+                let scan = await LocalUsageReader().scan(accountID: "invalid", provider: .claude, root: root, now: now, calendar: calendar(), source: .omp)
+                XCTAssertEqual(scan.summaries.filter { $0.scope == "ompHistory" }.map(\.counters.total), [130, 130])
+                XCTAssertTrue(scan.summaries.allSatisfy(\.isPartial))
+                let overview = try XCTUnwrap(LocalUsageOverview.aggregate([try XCTUnwrap(scan.overviewFacts)], now: now, calendar: calendar()))
+                for period in overview.periods {
+                    XCTAssertEqual(period.recordCount, 1)
+                    XCTAssertEqual(period.tokens, 130)
+                    XCTAssertEqual(period.estimatedUSD, Decimal(string: "0.000603"))
+                    XCTAssertTrue(period.isPartial)
+                }
+            }
+        }
+    }
+
+    func testOriginChangingForkIsExcludedBeforeProviderFiltering() async throws {
+        let root = try directory()
+        let original = entry("same")
+        let changed = original.replacingOccurrences(of: "\"anthropic\"", with: "\"openai-codex\"")
+        for reversed in [false, true] {
+            try save(header("parent") + original, at: root, name: reversed ? "z.jsonl" : "a.jsonl")
+            try save(header("fork") + changed, at: root, name: reversed ? "a.jsonl" : "z.jsonl")
+            try save(header("unrelated") + entry("same", at: "2026-10-12T13:00:00Z")
+                + entry("other").replacingOccurrences(of: "\"anthropic\"", with: "\"openai\""), at: root, name: "unrelated.jsonl")
+            let scan = await LocalUsageReader().scan(accountID: "origin", provider: .claude, root: root, now: now, calendar: calendar(), source: .omp)
+            XCTAssertEqual(scan.summaries.filter { $0.scope == "ompHistory" }.map(\.counters.total), [130, 130])
+            XCTAssertTrue(scan.summaries.allSatisfy(\.isPartial))
+            let overview = try XCTUnwrap(LocalUsageOverview.aggregate([try XCTUnwrap(scan.overviewFacts)], now: now, calendar: calendar()))
+            for period in overview.periods {
+                XCTAssertEqual(period.recordCount, 1)
+                XCTAssertEqual(period.tokens, 130)
+                XCTAssertEqual(period.estimatedUSD, Decimal(string: "0.000603"))
+                XCTAssertTrue(period.isPartial)
+            }
+        }
+    }
+
     func testConflictingForkAndOverflowDoNotBecomePlausibleTotals() async throws {
         let root = try directory()
         try save(header("a") + entry("same"), at: root)

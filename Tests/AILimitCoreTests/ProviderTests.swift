@@ -64,7 +64,8 @@ final class ProviderTests: XCTestCase {
             ]), credential: DirectCredential(provider: .copilot, accessToken: "fixture", metadata: ["userID": "1"]))
             for snapshot in [legacy, direct] {
                 let window = try XCTUnwrap(snapshot.windows.first)
-                XCTAssertNotNil(window.resetsAt)
+                XCTAssertEqual(window.resetsAt != nil, precision == .exact)
+                XCTAssertEqual(window.resetDate?.rawValue, precision == .dateOnly ? reset : nil)
                 XCTAssertEqual(window.resetPrecision, precision)
                 XCTAssertEqual(UsageFormat.resetTime(window, at: fixedNow) != nil, precision == .exact)
             }
@@ -100,7 +101,7 @@ final class ProviderTests: XCTestCase {
         let snapshot = try await KiroProvider().fetch(context: testContext(.kiro, cli: fixture("kiro.txt")))
         XCTAssertEqual(snapshot.windows.map(\.resetPrecision), [.dateOnly, .approximate])
         for window in snapshot.windows {
-            XCTAssertNotNil(window.resetsAt)
+            XCTAssertTrue(window.resetsAt != nil || window.resetDate != nil)
             XCTAssertNil(UsageFormat.resetTime(window, at: fixedNow))
         }
         XCTAssertTrue(UsageFormat.resetSummary(snapshot.windows[1], at: fixedNow).hasPrefix("약 "))

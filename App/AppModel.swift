@@ -316,12 +316,12 @@ final class AppModel: ObservableObject {
         defer { busy = false }
         guard let account = settings.connections.first(where: { $0.id == accountID }) else { return }
         do {
-            var updated = settings; updated.connections.removeAll { $0.id == accountID }
-            if updated.pinnedConnectionID == accountID { updated.pinnedConnectionID = nil }
             // Drain this account only: no late refresh can recreate its Keychain item.
             var paused = account; paused.enabled = false
             await coordinator.replace(paused)
             guard !terminating else { return }
+            var updated = settings; updated.connections.removeAll { $0.id == accountID }
+            if updated.pinnedConnectionID == accountID { updated.pinnedConnectionID = nil }
             try secrets.remove(accountID); try settingsStore.save(updated)
             settings = updated; await coordinator.disconnect(accountID)
             if selectedConnectionID == accountID { selectDefaultAccount() }

@@ -88,7 +88,7 @@ final class RemainingQuotaTests: XCTestCase {
     }
 
     func testHistoricalWarningUsesQuotaAgeFailureAndResetNotLocalFreshness() {
-        let window = QuotaWindow(id: "five", title: "5시간 한도", usedPercent: 100, resetsAt: now.addingTimeInterval(1800))
+        let window = QuotaWindow(id: "five", title: "5시간 한도", usedPercent: 100, resetsAt: now.addingTimeInterval(1800), resetPrecision: .exact)
         let usage = UsageSnapshot(provider: .codex, windows: [window], source: .publicCLI, fetchedAt: now)
         var state = ProviderState(provider: .codex, status: .ready, lastSuccess: usage, localTokens: [TokenSummary(scope: "ompSession", counters: TokenCounters(total: 100), observedAt: now.addingTimeInterval(900))])
         XCTAssertNil(UsageFormat.observationIssue(state, at: now.addingTimeInterval(899)))

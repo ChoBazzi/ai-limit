@@ -186,6 +186,14 @@ final class OMPUsageTests: XCTestCase {
         try save(header() + "{\"type\":\"message\",\"id\":\"one\",\"timestamp\":\"invalid\",\(message)}\n", root: root)
         let invalid = await scan(root)
         XCTAssertTrue(invalid.summaries.isEmpty)
+        for timestamp in ["", "\"timestamp\":\"invalid\","] {
+            let malformed = "{\"type\":\"message\",\"id\":\"one\",\(timestamp)\"message\":{\"role\":\"assistant\",\"provider\":\"openai-codex\",\"usage\":{\"input\":99}}}\n"
+            try save(header("parent") + entry("one") + malformed, root: root)
+            try save(header("fork") + entry("one") + entry("unrelated", at: "2026-03-08T14:00:00Z"), root: root, file: "fork.jsonl")
+            let conservative = await scan(root)
+            XCTAssertEqual(conservative.summaries.filter { $0.scope == "ompHistory" }.map(\.counters.total), [20, 20])
+            XCTAssertTrue(conservative.summaries.allSatisfy(\.isPartial))
+        }
     }
 
     func testSettingsRoundTripLegacyDefaultAndCoordinatorSourceReplacement() async throws {

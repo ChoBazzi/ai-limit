@@ -13,11 +13,8 @@ extension LocalUsageReader {
         }
         // Length-prefixing prevents identities containing delimiters from colliding.
         let key = "\(session.utf8.count):\(session)\(entry)"
-        // Retain only identity for other providers so a conflicting provider rewrite
-        // cannot make a copied entry appear to belong to the selected quota account.
-        if !matchesProvider { return Record(key: key, at: .distantPast, counters: TokenCounters(), complete: true, session: session, entryID: entry, origin: origin) }
+        var at = Date.distantPast
         do {
-            let at: Date
             if !json["timestamp"].isNull {
                 guard json["timestamp"].string?.contains("T") == true, let date = json["timestamp"].date else { throw UsageError.malformed }
                 at = date
@@ -25,6 +22,8 @@ extension LocalUsageReader {
                 guard let milliseconds = try message["timestamp"].integer() else { throw UsageError.malformed }
                 at = Date(timeIntervalSince1970: Double(milliseconds) / 1000)
             }
+            // Other providers still participate in inherited identity conflicts.
+            if !matchesProvider { return Record(key: key, at: at, counters: TokenCounters(), complete: true, session: session, entryID: entry, origin: origin) }
             let usage = message["usage"]
             let input = try usage["input"].integer()
             let output = try usage["output"].integer()
@@ -48,7 +47,7 @@ extension LocalUsageReader {
         } catch {
             // An invalid revision must invalidate earlier copies with this identity,
             // not silently resurrect their values as if the newer record did not exist.
-            return Record(key: key, at: .distantPast, counters: TokenCounters(), complete: false, session: session, entryID: entry, origin: origin, isPartial: true)
+            return Record(key: key, at: at, counters: TokenCounters(), complete: false, session: session, entryID: entry, origin: origin, isPartial: true)
         }
     }
 
@@ -98,14 +97,14 @@ extension LocalUsageReader {
             guard conflicts.contains(row.key), let entry = row.entryID else { return nil }
             return HistoryKey(entry: entry, at: row.at)
         })
-        for row in valid {
+        for row in selected.values where !conflicts.contains(row.key) {
             guard let entry = row.entryID else { partial = true; continue }
             let key = HistoryKey(entry: entry, at: row.at)
             if let old = history[key] {
-                if old.counters != row.counters { historyConflicts.insert(key); partial = true }
+                if old.counters != row.counters || old.origin != row.origin { historyConflicts.insert(key); partial = true }
             } else { history[key] = row }
         }
-        let historyRows = history.filter { !historyConflicts.contains($0.key) }.map(\.value)
+        let historyRows = history.filter { !historyConflicts.contains($0.key) && $0.value.origin == origin }.map(\.value)
         let today = calendar.startOfDay(for: now)
         guard let end = calendar.date(byAdding: .day, value: 1, to: today), let week = calendar.date(byAdding: .day, value: -6, to: today) else { return summaries.map { var value = $0; value.isPartial = true; return value } }
         for (start, title) in [(today, "오늘"), (week, "최근 7일")] {

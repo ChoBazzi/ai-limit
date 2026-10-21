@@ -48,13 +48,61 @@ public enum ResetPrecision: String, Codable, Sendable {
         self = Self(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown
     }
 }
+/// A Gregorian civil date, not an instant in the machine's time zone.
+public struct ResetCalendarDate: Codable, Sendable, Equatable {
+    public let year: Int
+    public let month: Int
+    public let day: Int
+    public var rawValue: String { String(format: "%04d-%02d-%02d", year, month, day) }
+    public init?(_ value: String) {
+        guard value.range(of: #"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"#, options: .regularExpression) != nil else { return nil }
+        let parts = value.split(separator: "-").compactMap { Int($0) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        guard parts[0] > 0,
+              let date = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2])),
+              calendar.component(.year, from: date) == parts[0],
+              calendar.component(.month, from: date) == parts[1],
+              calendar.component(.day, from: date) == parts[2] else { return nil }
+        year = parts[0]; month = parts[1]; day = parts[2]
+    }
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        guard let value = Self(try container.decode(String.self)) else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid reset calendar date")
+        }
+        self = value
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+    public func endBoundary(calendar: Calendar = .current) -> Date? {
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = calendar.timeZone
+        guard let start = gregorian.date(from: DateComponents(year: year, month: month, day: day)) else { return nil }
+        return gregorian.date(byAdding: .day, value: 1, to: start)
+    }
+}
 public struct QuotaWindow: Codable, Sendable, Identifiable {
-    public var id: String; public var title: String; public var used: Decimal?; public var limit: Decimal?; public var remaining: Decimal?; public var unit: MetricUnit; public var usedPercent: Double?; public var unlimited: Bool; public var resetsAt: Date?; public var resetPrecision: ResetPrecision?; public var resetDescription: String?
-    public init(id: String, title: String, used: Decimal? = nil, limit: Decimal? = nil, remaining: Decimal? = nil, unit: MetricUnit = .percent, usedPercent: Double? = nil, unlimited: Bool = false, resetsAt: Date? = nil, resetPrecision: ResetPrecision? = nil, resetDescription: String? = nil) {
-        self.id = id; self.title = title; self.used = used; self.limit = limit; self.remaining = remaining; self.unit = unit; self.usedPercent = usedPercent; self.unlimited = unlimited; self.resetsAt = resetsAt; self.resetPrecision = resetPrecision; self.resetDescription = resetDescription
+    public var id: String; public var title: String; public var used: Decimal?; public var limit: Decimal?; public var remaining: Decimal?; public var unit: MetricUnit; public var usedPercent: Double?; public var unlimited: Bool; public var resetsAt: Date?; public var resetPrecision: ResetPrecision?; public var resetDate: ResetCalendarDate?; public var resetDescription: String?
+    public init(id: String, title: String, used: Decimal? = nil, limit: Decimal? = nil, remaining: Decimal? = nil, unit: MetricUnit = .percent, usedPercent: Double? = nil, unlimited: Bool = false, resetsAt: Date? = nil, resetPrecision: ResetPrecision? = nil, resetDate: ResetCalendarDate? = nil, resetDescription: String? = nil) {
+        self.id = id; self.title = title; self.used = used; self.limit = limit; self.remaining = remaining; self.unit = unit; self.usedPercent = usedPercent; self.unlimited = unlimited; self.resetsAt = resetsAt; self.resetPrecision = resetPrecision; self.resetDate = resetDate; self.resetDescription = resetDescription
         if self.usedPercent == nil, let used, let limit, limit > 0 { self.usedPercent = NSDecimalNumber(decimal: used / limit * 100).doubleValue }
     }
     public var remainingPercent: Double? { usedPercent.map { 100 - $0 } }
+    /// Only known exact instants or the end of a reported civil day can expire an observation.
+    /// Approximate/unknown values (including legacy date-only timestamps) age normally instead.
+    public func resetBoundary(calendar: Calendar = .current) -> Date? {
+        switch resetPrecision {
+        case .exact: return resetsAt
+        case .dateOnly: return resetDate?.endBoundary(calendar: calendar)
+        default: return nil
+        }
+    }
+    public func hasResetElapsed(at now: Date, calendar: Calendar = .current) -> Bool {
+        resetBoundary(calendar: calendar).map { $0 <= now } ?? false
+    }
 }
 public struct BalanceMetric: Codable, Sendable, Identifiable {
     public var id: String; public var title: String; public var amount: Decimal; public var unit: MetricUnit; public var expiresAt: Date?
@@ -99,9 +147,9 @@ public struct UsageSnapshot: Codable, Sendable {
         let seconds = Range(match.range(at: 2), in: title).flatMap { Int64(title[$0]) }
         return prefix + UsageFormat.limitTitle(seconds: seconds)
     }
-    public func isStale(at date: Date) -> Bool {
+    public func isStale(at date: Date, calendar: Calendar = .current) -> Bool {
         date.timeIntervalSince(fetchedAt) >= 900
-            || windows.contains { $0.resetsAt.map { $0 <= date } ?? false }
+            || windows.contains { $0.hasResetElapsed(at: date, calendar: calendar) }
             || resetCredits?.credits?.contains { $0.expiresAt.map { $0 <= date } ?? false } == true
     }
     public var mostLimited: QuotaWindow? { windows.filter { $0.usedPercent != nil && !$0.unlimited }.max { $0.usedPercent! < $1.usedPercent! } }
@@ -287,9 +335,9 @@ public enum UsageFormat {
         }
         return result
     }
-    public static func observationIssue(_ state: ProviderState, at now: Date) -> String? {
+    public static func observationIssue(_ state: ProviderState, at now: Date, calendar: Calendar = .current) -> String? {
         guard let usage = state.lastSuccess else { return nil }
-        if usage.windows.contains(where: { $0.resetsAt.map { $0 <= now } ?? false }) { return "리셋 지남 · 갱신 필요" }
+        if usage.windows.contains(where: { $0.hasResetElapsed(at: now, calendar: calendar) }) { return "리셋 지남 · 갱신 필요" }
         if usage.resetCredits?.credits?.contains(where: { $0.expiresAt.map { $0 <= now } ?? false }) == true {
             return "리셋권 사용기한 지남 · 갱신 필요"
         }
@@ -297,14 +345,19 @@ public enum UsageFormat {
         case .needsAuthentication: return "재로그인 필요 · 마지막 확인 값"
         case .failed, .unavailable: return "조회 실패 · 마지막 확인 값"
         case .disconnected: return "구독 한도 미연결 · 마지막 확인 값"
-        default: return usage.isStale(at: now) ? "이전 관찰 · 갱신 필요" : nil
+        default: return usage.isStale(at: now, calendar: calendar) ? "이전 관찰 · 갱신 필요" : nil
         }
     }
-    public static func resetSummary(_ window: QuotaWindow, at now: Date) -> String {
+    public static func resetSummary(_ window: QuotaWindow, at now: Date, calendar: Calendar = .current) -> String {
+        if window.hasResetElapsed(at: now, calendar: calendar) { return "리셋 지남 · 갱신 필요" }
+        if window.resetPrecision == .dateOnly {
+            guard let date = window.resetDate else { return "리셋 날짜 확인 필요 · 시각 미제공" }
+            return date.rawValue + " 리셋 · 시각 미제공"
+        }
         guard let reset = window.resetsAt else { return "리셋 정보 미제공" }
-        guard reset > now else { return "리셋 지남 · 갱신 필요" }
         guard window.resetPrecision == .exact else {
-            return (window.resetPrecision == .approximate ? "약 " : "") + reset.formatted(.dateTime.month(.twoDigits).day(.twoDigits)) + " 리셋 · 시각 미제공"
+            let date = reset.formatted(.dateTime.month(.twoDigits).day(.twoDigits))
+            return (window.resetPrecision == .approximate ? "약 " : "") + date + " 리셋 · 시각 미제공"
         }
         let seconds = reset.timeIntervalSince(now)
         if seconds < 60 { return "1분 이내 리셋" }
@@ -339,10 +392,14 @@ public enum UsageFormat {
         return summary + " (" + time + ")"
     }
 
-    public static func resetLabel(_ window: QuotaWindow, at now: Date) -> String {
+    public static func resetLabel(_ window: QuotaWindow, at now: Date, calendar: Calendar = .current) -> String {
+        if window.resetPrecision == .dateOnly {
+            guard let date = window.resetDate else { return "리셋 날짜 확인 필요 · 시각 미제공" }
+            return window.hasResetElapsed(at: now, calendar: calendar) ? "리셋 지남 · " + date.rawValue : date.rawValue + " 리셋 · 시각 미제공"
+        }
         guard let reset = window.resetsAt else { return "리셋 정보 미제공" }
         let date = (window.resetPrecision == .approximate ? "약 " : "") + reset.formatted(date: .abbreviated, time: window.resetPrecision == .exact ? .shortened : .omitted)
-        return reset <= now ? "리셋 지남 · " + date : date + " 리셋"
+        return window.hasResetElapsed(at: now, calendar: calendar) ? "리셋 지남 · " + date : date + " 리셋"
     }
     public static func menuTitle(_ state: ProviderState, at now: Date) -> String {
         guard let usage = state.lastSuccess else { return state.displayTitle + " · 한도 미제공" }

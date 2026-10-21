@@ -17,7 +17,7 @@ struct SnapshotTimelineProvider: AppIntentTimelineProvider {
         for provider in snapshot?.orderedProviders(selection: selection) ?? [] {
             if let value = provider.lastSuccess {
                 boundaries.append(value.fetchedAt.addingTimeInterval(900))
-                boundaries.append(contentsOf: value.windows.compactMap(\.resetsAt))
+                boundaries.append(contentsOf: value.windows.compactMap { $0.resetBoundary() })
                 boundaries.append(contentsOf: value.resetCredits?.credits?.compactMap(\.expiresAt) ?? [])
             }
         }
