@@ -87,6 +87,82 @@ final class LocalUsageRecoveryTests: XCTestCase {
         XCTAssertNil(cached.message)
     }
 
+    func testFileBudgetResumesIntoArchiveAndStartsNewTraversal() async throws {
+        let root = try directory()
+        let sessions = root.appendingPathComponent("sessions")
+        let archive = root.appendingPathComponent("archived_sessions")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        func codexLine(_ session: String, total: Int, hour: Int) -> Data {
+            Data(("{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(session)\"}}\n"
+                + "{\"type\":\"event_msg\",\"timestamp\":\"2026-10-12T\(hour):00:00Z\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"total_tokens\":\(total)}}}}\n").utf8)
+        }
+        for index in 0..<2 {
+            try codexLine("old-\(index)", total: 1, hour: 12).write(to: sessions.appendingPathComponent("\(index).jsonl"))
+        }
+        let latest = archive.appendingPathComponent("latest.jsonl")
+        try codexLine("latest", total: 9999, hour: 13).write(to: latest)
+        let reader = LocalUsageReader(scanByteLimit: 128 * 1024, scanFileLimit: 2)
+        let interrupted = await reader.scan(accountID: "local", provider: .codex, root: root, now: now)
+        XCTAssertEqual(interrupted.summaries.first?.counters.total, 1)
+        XCTAssertTrue(interrupted.summaries.first?.isPartial == true)
+        let complete = await reader.scan(accountID: "local", provider: .codex, root: root, now: now)
+        XCTAssertEqual(complete.summaries.first?.counters.total, 9999)
+        XCTAssertFalse(complete.summaries.first?.isPartial ?? true)
+        XCTAssertNil(complete.message)
+
+        // A completed traversal must restart so later appends are still observed.
+        try codexLine("latest", total: 10001, hour: 14).write(to: latest, options: .atomic)
+        let pending = await reader.scan(accountID: "local", provider: .codex, root: root, now: now)
+        XCTAssertEqual(pending.summaries.first?.counters.total, 9999)
+        XCTAssertTrue(pending.summaries.first?.isPartial == true)
+        let updated = await reader.scan(accountID: "local", provider: .codex, root: root, now: now)
+        XCTAssertEqual(updated.summaries.first?.counters.total, 10001)
+        XCTAssertNil(updated.message)
+    }
+
+    func testFileBudgetCombinesBatchesAndPrunesDeletedFilesAfterTraversal() async throws {
+        let root = try directory()
+        for request in ["a", "b", "c"] {
+            try Data(line(request, output: 1).utf8).write(to: root.appendingPathComponent("\(request).jsonl"))
+        }
+        let reader = LocalUsageReader(scanByteLimit: 128 * 1024, scanFileLimit: 2)
+        let initial = await finish(reader, root)
+        XCTAssertEqual(initial.summaries.map(\.counters.total), [33, 33])
+        XCTAssertNil(initial.message)
+        let overview = try XCTUnwrap(LocalUsageOverview.aggregate([try XCTUnwrap(initial.overviewFacts)], now: now, calendar: calendar))
+        XCTAssertEqual(overview.periods.first?.tokens, 33)
+        XCTAssertFalse(overview.isPartial)
+
+        try Data(line("a", output: 9).utf8).write(to: root.appendingPathComponent("a.jsonl"), options: .atomic)
+        let pending = await scan(reader, root)
+        XCTAssertEqual(pending.summaries.first?.counters.total, 33)
+        XCTAssertTrue(pending.summaries.first?.isPartial == true)
+        let updated = await finish(reader, root)
+        XCTAssertEqual(updated.summaries.map(\.counters.total), [41, 41])
+        XCTAssertNil(updated.message)
+
+        try FileManager.default.removeItem(at: root.appendingPathComponent("b.jsonl"))
+        let pruned = await finish(reader, root)
+        XCTAssertEqual(pruned.summaries.map(\.counters.total), [30, 30])
+        XCTAssertNil(pruned.message)
+    }
+
+    func testFolderChangeDiscardsPendingTraversal() async throws {
+        let original = try directory()
+        for request in ["a", "b", "c"] {
+            try Data(line(request, output: 1).utf8).write(to: original.appendingPathComponent("\(request).jsonl"))
+        }
+        let replacement = try directory()
+        try Data(line("replacement", output: 7).utf8).write(to: replacement.appendingPathComponent("new.jsonl"))
+        let reader = LocalUsageReader(scanByteLimit: 128 * 1024, scanFileLimit: 2)
+        let interrupted = await scan(reader, original)
+        XCTAssertTrue(interrupted.summaries.first?.isPartial == true)
+        let changed = await scan(reader, replacement)
+        XCTAssertEqual(changed.summaries.map(\.counters.total), [17, 17])
+        XCTAssertNil(changed.message)
+    }
+
     func testReplacementWithSameSizeAndDateInvalidatesSavedCursor() async throws {
         let root = try directory()
         let file = root.appendingPathComponent("usage.jsonl")
